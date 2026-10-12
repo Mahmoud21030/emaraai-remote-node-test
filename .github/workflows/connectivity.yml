@@ -1,0 +1,42 @@
+name: Tailscale Hub connectivity
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  connectivity:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - name: Check configuration
+        shell: pwsh
+        env:
+          TS_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+          HUB_URL: ${{ secrets.HUB_URL }}
+        run: |
+          if (!$env:TS_AUTHKEY -or !$env:HUB_URL) { throw 'Add TAILSCALE_AUTHKEY and HUB_URL in Actions Secrets first.' }
+      - name: Install Tailscale
+        shell: pwsh
+        run: |
+          choco install tailscale --yes --no-progress
+          if ($LASTEXITCODE) { throw 'Tailscale installation failed' }
+      - name: Connect and test Hub
+        shell: pwsh
+        env:
+          TS_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+          HUB_URL: ${{ secrets.HUB_URL }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ts = Join-Path $env:ProgramFiles 'Tailscale/tailscale.exe'
+          & $ts up --auth-key=$env:TS_AUTHKEY --hostname=emaraai-test-$env:GITHUB_RUN_ID --unattended --timeout=90s
+          if ($LASTEXITCODE) { throw 'Tailscale connection failed' }
+          $hub = $env:HUB_URL.TrimEnd('/')
+          $health = Invoke-RestMethod "$hub/health" -TimeoutSec 30
+          if (!$health.version) { throw 'Hub health response has no version' }
+          "## Tailscale connectivity passed`n- Hub responded to /health.`n- Hub version: $($health.version)`n`nBrowser extension and ChatGPT login have not been tested." | Out-File $env:GITHUB_STEP_SUMMARY -Append
+      - name: Disconnect temporary node
+        if: always()
+        shell: pwsh
+        run: |
+          $ts = Join-Path $env:ProgramFiles 'Tailscale/tailscale.exe'
+          if (Test-Path $ts) { & $ts logout }
