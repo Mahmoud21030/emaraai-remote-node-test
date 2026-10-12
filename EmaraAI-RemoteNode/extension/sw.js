@@ -911,7 +911,7 @@ async function openChatTab(url, own) {
 async function reloadIfFailed(t) {
   const failed = await run(t.id, pageLoadFailed, [false, ""], "MAIN").catch(() => false);
   if (!failed) return false;
-  await chrome.tabs.reload(t.id).catch(() => {});
+  await chrome.tabs.reload(t.id, {bypassCache: true}).catch(() => {});      // a hard reload (the owner's rule): nothing is taken from the cache
   await sleep(600); await waitLoaded(t.id); await sleep(2000);
   return true;
 }
