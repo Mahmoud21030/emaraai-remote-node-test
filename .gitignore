@@ -1,0 +1,4 @@
+**/node.json
+**/node.cfg
+**/chrome-profile/
+*.log

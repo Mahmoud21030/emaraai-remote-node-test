@@ -1,0 +1,29 @@
+name: Windows prerequisites
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prerequisites:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate supplied kit and browser
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $kit = Join-Path $PWD 'EmaraAI-RemoteNode'
+          $errorsFound = $null
+          $tokensFound = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $kit 'Start-Node.ps1'), [ref]$tokensFound, [ref]$errorsFound) | Out-Null
+          if ($errorsFound.Count) { throw 'PowerShell syntax validation failed' }
+          node --check "$kit/extension/sw.js"
+          if ($LASTEXITCODE) { throw 'Extension JavaScript validation failed' }
+          $manifest = Get-Content "$kit/extension/manifest.json" -Raw | ConvertFrom-Json
+          if ($manifest.manifest_version -ne 3) { throw 'Expected Manifest V3' }
+          $chrome = 'C:/Program Files/Google/Chrome/Application/chrome.exe'
+          if (!(Test-Path $chrome)) { $chrome = 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe' }
+          if (!(Test-Path $chrome)) { throw 'Chrome missing' }
+          $version = (Get-Item $chrome).VersionInfo.ProductVersion
+          "## Prerequisites passed`n- Chrome: $version`n- Extension: $($manifest.version)`n- PowerShell and JavaScript syntax: valid`n`nThis does not test Tailscale, extension loading, ChatGPT login, or the Hub." | Out-File $env:GITHUB_STEP_SUMMARY -Append
