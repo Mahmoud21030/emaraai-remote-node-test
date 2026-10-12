@@ -1,0 +1,58 @@
+name: Interactive RemoteNode integration test
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: interactive-remotenode
+  cancel-in-progress: false
+jobs:
+  interactive:
+    runs-on: windows-2022
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check required secrets
+        shell: pwsh
+        env:
+          TS_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+          HUB_URL: ${{ secrets.HUB_URL }}
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+          TESTER_IP: ${{ secrets.TESTER_IP }}
+        run: |
+          foreach ($key in 'TS_AUTHKEY','HUB_URL','RDP_PASSWORD','TESTER_IP') {
+            if (![Environment]::GetEnvironmentVariable($key)) { throw "Missing secret for $key" }
+          }
+      - name: Install Tailscale
+        shell: pwsh
+        run: |
+          choco install tailscale --yes --no-progress
+          if ($LASTEXITCODE) { throw 'Tailscale installation failed' }
+      - name: Connect private test machine
+        shell: pwsh
+        env:
+          TS_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          & "$env:ProgramFiles/Tailscale/tailscale.exe" up --auth-key=$env:TS_AUTHKEY --hostname=emaraai-deep-test-$env:GITHUB_RUN_ID --unattended --timeout=90s
+          if ($LASTEXITCODE) { throw 'Tailscale connection failed; a one-use key may need replacement' }
+      - name: Prepare private desktop and Chrome
+        shell: pwsh
+        env:
+          HUB_URL: ${{ secrets.HUB_URL }}
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+          TESTER_IP: ${{ secrets.TESTER_IP }}
+        run: ./scripts/Prepare-Interactive.ps1
+      - name: Observe browser integration for up to 350 minutes
+        shell: pwsh
+        env:
+          HUB_URL: ${{ secrets.HUB_URL }}
+        run: ./scripts/Monitor-Interactive.ps1
+      - name: Close private desktop and disconnect
+        if: always()
+        shell: pwsh
+        run: |
+          Get-NetFirewallRule -Name EmaraAI-Test-RDP -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+          Set-ItemProperty 'HKLM:/SYSTEM/CurrentControlSet/Control/Terminal Server' fDenyTSConnections 1
+          Get-Process chrome -ErrorAction SilentlyContinue | Stop-Process -Force
+          $ts = "$env:ProgramFiles/Tailscale/tailscale.exe"
+          if (Test-Path $ts) { & $ts logout }

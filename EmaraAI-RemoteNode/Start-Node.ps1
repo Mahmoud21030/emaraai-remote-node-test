@@ -4,7 +4,8 @@
 param(
     [string]$Hub = "",              # the hub's private (Tailscale) address; asked once and remembered
     [double]$RestartHours = 0,      # restart Chrome every N hours to give its memory back (0 = never)
-    [switch]$Throttled              # start Chrome WITHOUT the switches that keep covered windows and background tabs awake
+    [switch]$Throttled,             # start Chrome WITHOUT the switches that keep covered windows and background tabs awake
+    [string]$BrowserPath = ""       # optional Chrome for Testing executable
 )
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -21,7 +22,7 @@ Say "EmaraAI remote node" "Cyan"
 Say "-------------------"
 
 # 1. Chrome
-$chrome = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+$chrome = @($BrowserPath, "$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
             "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe") | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 if (-not $chrome) { Stop-Here "Google Chrome is not installed on this machine. Install it from https://www.google.com/chrome/ and start this again." }
 Say "Chrome:     found"
