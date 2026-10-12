@@ -1389,6 +1389,16 @@ const OPS = {
     return {tab_id: String(t.id), url, mentioned: r.mentioned, thinking: r.thinking, attached: r.attached, mode: r.mode, model: r.model, menu: r.menu,
             took: {loaded, typed, address: Date.now() - t0, page: r.took}};
   },
+  // Every ChatGPT tab that shows a conversation: which chat, which tab (the hub closes the ones of ITS chats that it does not track).
+  async chat_tabs() {
+    const tabs = await chrome.tabs.query({url: "https://chatgpt.com/*"});
+    return {tabs: tabs.map(t => ({tab_id: String(t.id), chat_id: chatIdOf(t.url) || "", window_id: t.windowId, active: !!t.active, discarded: !!t.discarded})).filter(t => t.chat_id)};
+  },
+  async close_tabs(a) {
+    let n = 0;
+    for (const id of (a.tab_ids || [])) { try { await chrome.tabs.remove(Number(id)); n++; } catch (e) {} }
+    return {closed: n};
+  },
   // Load the chat's conversation in a tab and type nothing: the prompt that follows finds the page there.
   async warm(a) {
     const known = chatIdOf(a.ref && a.ref.url);
