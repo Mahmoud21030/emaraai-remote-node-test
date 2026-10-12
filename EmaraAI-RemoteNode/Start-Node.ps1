@@ -5,6 +5,7 @@ param(
     [string]$Hub = "",              # the hub's private (Tailscale) address; asked once and remembered
     [double]$RestartHours = 0,      # restart Chrome every N hours to give its memory back (0 = never)
     [switch]$Throttled,             # start Chrome WITHOUT the switches that keep covered windows and background tabs awake
+    [switch]$NoDevTools,            # do NOT open the inspector (DevTools) with every tab
     [string]$BrowserPath = ""       # optional Chrome for Testing executable
 )
 $ErrorActionPreference = "Stop"
@@ -60,6 +61,8 @@ $node = @{ hub = $Hub; name = $env:COMPUTERNAME } | ConvertTo-Json -Compress
 
 # 4. Chrome with its own profile for the node
 $flags = @("--user-data-dir=`"$profileDir`"", "--no-first-run", "--no-default-browser-check", "--restore-last-session", "--load-extension=`"$ext`"")
+# The owner's rule: the inspector (DevTools) is open with every tab - conversations seem to load better with it. It costs memory per tab.
+if (-not $NoDevTools) { $flags += "--auto-open-devtools-for-tabs" }
 if (-not $Throttled) { $flags += @("--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-background-timer-throttling") }
 $first = -not (Test-Path (Join-Path $profileDir "Default"))
 

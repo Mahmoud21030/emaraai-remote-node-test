@@ -907,6 +907,14 @@ async function openChatTab(url, own) {
   await groupTab(t.id, "EmaraAI delivery");
   return t;
 }
+// A tab that was left on ChatGPT's error page by an earlier try: it is reloaded in place (not closed and opened again).
+async function reloadIfFailed(t) {
+  const failed = await run(t.id, pageLoadFailed, [false, ""], "MAIN").catch(() => false);
+  if (!failed) return false;
+  await chrome.tabs.reload(t.id).catch(() => {});
+  await sleep(600); await waitLoaded(t.id); await sleep(2000);
+  return true;
+}
 // The owner's rule: a chat inside a ChatGPT Project is reached through the project's page - open that page, click the chat in its
 // list - not by its own address. The site then brings the conversation up inside the page that is already running, which is what a
 // person does and what shows "Could not load this ChatGPT conversation" less often. Returns the tab and how it got there:
@@ -1450,8 +1458,9 @@ const OPS = {
       if (chatIdOf(t.url) !== known) { await chrome.tabs.remove(t.id).catch(() => {}); return {warmed: false, opened, via}; }
     }
     await groupTab(t.id, a.group);
+    if (!opened && await reloadIfFailed(t)) { opened = true; via = "reload"; }
     const load = await settleChat(t, a.ref.url, a.front === undefined ? true : a.front, a.retry_waits);
-    if (!load.ok) { await chrome.tabs.remove(t.id).catch(() => {}); return {warmed: false, opened, load, via}; }
+    if (!load.ok) return {warmed: false, opened, load, via};       // the tab stays: the next try reloads it in place
     const moved = await intoDeliveryWindow(t, false).catch(() => null);
     if (moved) { t = moved; await groupTab(t.id, a.group); }
     return {warmed: true, tab_id: String(t.id), url: t.url, opened, load, via};
@@ -1473,11 +1482,12 @@ const OPS = {
     }
     if (!t) { const e = new Error("chat tab not found"); e.missing = true; throw e; }
     await groupTab(t.id, a.group);
+    if (!opened && known && await reloadIfFailed(t)) { opened = true; via = "reload"; }
     const load = known ? await settleChat(t, a.ref.url, a.front === undefined ? true : a.front, a.retry_waits) : {ok: true, retries: 0, reloaded: false};
     if (!load.ok) {
       const e = new Error(load.error_page ? `the conversation did not load: ChatGPT showed "Could not load this conversation" (Retry pressed ${load.retries}x)`
         : "the conversation did not load: no message box appeared (is ChatGPT signed in? has the chat reached its maximum length?)");
-      await chrome.tabs.remove(t.id).catch(() => {});      // a tab stuck on the error page is not kept: the next try is a fresh load
+      // the tab is kept on purpose (the owner's rule): the next try reloads this same tab instead of closing it and opening another
       if (via) e.message += ` [via project page: ${via}]`;
       e.beforeSend = true; throw e;
     }

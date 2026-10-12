@@ -20,6 +20,7 @@ Start
 Options (run from a command prompt in this folder)
   Start-Node.cmd -RestartHours 5      restart Chrome every 5 hours to give its memory back
   Start-Node.cmd -Throttled           start Chrome without the switches that keep covered windows awake
+  Start-Node.cmd -NoDevTools          do not open the inspector (DevTools) with every tab (it is opened by default)
   Start-Node.cmd -Hub <address>       use another hub address
 
 Good to know
