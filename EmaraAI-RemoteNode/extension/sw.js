@@ -907,6 +907,43 @@ async function openChatTab(url, own) {
   await groupTab(t.id, "EmaraAI delivery");
   return t;
 }
+// The owner's rule: a chat inside a ChatGPT Project is reached through the project's page - open that page, click the chat in its
+// list - not by its own address. The site then brings the conversation up inside the page that is already running, which is what a
+// person does and what shows "Could not load this ChatGPT conversation" less often. Returns the tab and how it got there:
+// "clicked" | "not_listed" (the chat is not in the page's list) | "page_failed" | "" (not a project chat, or switched off).
+async function openChatVia(url, own, viaProject) {
+  const m = String(url || "").match(/^(https:\/\/[^/]+)(\/g\/[^/]+)\/c\/([0-9a-f-]{8,})/i);
+  if (!viaProject || !m) return {t: await openChatTab(url, own), via: ""};
+  const t = await openChatTab(m[1] + m[2] + "/project", own);
+  await waitLoaded(t.id); await sleep(1200);
+  let ready = false;
+  for (let i = 0; i < 40 && !ready; i++) { ready = !!(await run(t.id, pageHasComposer, [], "MAIN").catch(() => false)); if (!ready) await sleep(500); }
+  let via = ready ? "" : "page_failed";
+  if (ready) {
+    const click = id => {
+      const links = [...document.querySelectorAll('a[href*="/c/' + id + '"]')];
+      const link = links.find(x => x.offsetParent !== null) || links[0];
+      if (link) { link.scrollIntoView({block: "center"}); link.click(); return "clicked"; }
+      // the list shows only the latest chats: "Show more" / "Load more" brings the older ones
+      const more = [...document.querySelectorAll("main button, main a, main [role='button']")].find(b => /^(show|load|see) more/i.test((b.innerText || "").trim()));
+      if (more) { more.scrollIntoView({block: "center"}); more.click(); return "more"; }
+      return "";
+    };
+    for (let i = 0; i < 14 && via !== "clicked"; i++) {      // the list of chats is drawn a moment after the page
+      const how = await run(t.id, click, [m[3]], "MAIN").catch(() => "");
+      if (how === "clicked") via = "clicked";
+      else await sleep(how === "more" ? 1200 : 700);
+    }
+    if (via !== "clicked") via = "not_listed";
+  }
+  if (via === "clicked") {
+    for (let i = 0; i < 30; i++) { const cur = await chrome.tabs.get(t.id); if (String(cur.url || "").includes("/c/" + m[3])) break; await sleep(400); }
+    const cur = await chrome.tabs.get(t.id);
+    if (!String(cur.url || "").includes("/c/" + m[3])) via = "not_listed";
+  }
+  if (via !== "clicked") await chrome.tabs.update(t.id, {url});      // the fallback: the conversation's own address, in this same tab
+  return {t: await chrome.tabs.get(t.id), via};
+}
 // A NEW chat's tab. Chrome hardly loads a background tab (it can sit on "loading" for minutes when the PC is busy or the window
 // is covered), so when the delivery window exists the tab is opened THERE as its active tab and loads like a tab you look at.
 // Your own window is not touched. The steps that need the tab drawn (loading, typing) take their turn with the deliveries.
@@ -1403,30 +1440,32 @@ const OPS = {
   async warm(a) {
     const known = chatIdOf(a.ref && a.ref.url);
     if (!known) return {warmed: false};
-    let t = await findTab(a.ref), opened = false;
+    let t = await findTab(a.ref), opened = false, via = "";
     if (t && t.discarded) { await chrome.tabs.remove(t.id).catch(() => {}); t = null; }       // Chrome emptied it to save memory: it is no page any more
     if (!t) {
       opened = true;
-      t = await openChatTab(a.ref.url, a.own_window !== false); await waitLoaded(t.id); await sleep(2500);
+      const o = await openChatVia(a.ref.url, a.own_window !== false, a.via_project !== false);
+      t = o.t; via = o.via; await waitLoaded(t.id); await sleep(via === "clicked" ? 800 : 2500);
       t = await chrome.tabs.get(t.id);
-      if (chatIdOf(t.url) !== known) { await chrome.tabs.remove(t.id).catch(() => {}); return {warmed: false, opened}; }
+      if (chatIdOf(t.url) !== known) { await chrome.tabs.remove(t.id).catch(() => {}); return {warmed: false, opened, via}; }
     }
     await groupTab(t.id, a.group);
     const load = await settleChat(t, a.ref.url, a.front === undefined ? true : a.front, a.retry_waits);
-    if (!load.ok) { await chrome.tabs.remove(t.id).catch(() => {}); return {warmed: false, opened, load}; }
+    if (!load.ok) { await chrome.tabs.remove(t.id).catch(() => {}); return {warmed: false, opened, load, via}; }
     const moved = await intoDeliveryWindow(t, false).catch(() => null);
     if (moved) { t = moved; await groupTab(t.id, a.group); }
-    return {warmed: true, tab_id: String(t.id), url: t.url, opened, load};
+    return {warmed: true, tab_id: String(t.id), url: t.url, opened, load, via};
   },
   async send(a) {
-    let t = await findTab(a.ref), opened = false;
+    let t = await findTab(a.ref), opened = false, via = "";
     const known = chatIdOf(a.ref && a.ref.url);     // only a real chat id can be reopened (a temporary address would open an EMPTY chat)
     if (t && t.discarded && known) { await chrome.tabs.remove(t.id).catch(() => {}); t = null; }       // emptied by Chrome to save memory
     if (!t && known) {
       opened = true;
       // In the hub's own window (lifecycle.tab_window = dedicated), or as a background tab of the window in use (= current). Which of
       // the two loads a conversation more reliably is measured per prompt (tabs.send carries the window).
-      t = await openChatTab(a.ref.url, a.own_window !== false);
+      const o = await openChatVia(a.ref.url, a.own_window !== false, a.via_project !== false);
+      t = o.t; via = o.via;
       await waitLoaded(t.id); await sleep(2500);
       t = await chrome.tabs.get(t.id);
       // ChatGPT sends an address it does not know to its start page. Typing there would begin a NEW chat: never do that.
@@ -1439,6 +1478,7 @@ const OPS = {
       const e = new Error(load.error_page ? `the conversation did not load: ChatGPT showed "Could not load this conversation" (Retry pressed ${load.retries}x)`
         : "the conversation did not load: no message box appeared (is ChatGPT signed in? has the chat reached its maximum length?)");
       await chrome.tabs.remove(t.id).catch(() => {});      // a tab stuck on the error page is not kept: the next try is a fresh load
+      if (via) e.message += ` [via project page: ${via}]`;
       e.beforeSend = true; throw e;
     }
     const r = await run(t.id, pageTypeSend, [a.text, a.plugin || "", a.sel, a.files || []], "MAIN");
@@ -1446,7 +1486,7 @@ const OPS = {
     // the prompt is in the chat: now the tab goes to the hub's one window (all chat tabs live there, none stays in yours)
     const moved = await intoDeliveryWindow(t, false).catch(() => null);
     if (moved) { t = moved; await groupTab(t.id, a.group); }
-    return {tab_id: String(t.id), url: t.url, mentioned: r.mentioned, thinking: r.thinking, attached: r.attached, load, opened, delivery_timeouts: r.delivery_timeouts || 0};
+    return {tab_id: String(t.id), url: t.url, mentioned: r.mentioned, thinking: r.thinking, attached: r.attached, load, opened, via, delivery_timeouts: r.delivery_timeouts || 0};
   },
   async observe(a) {
     const t = await findTab(a.ref);
