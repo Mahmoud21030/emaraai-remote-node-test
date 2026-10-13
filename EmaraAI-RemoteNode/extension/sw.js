@@ -536,11 +536,10 @@ async function settleChat(t, url, front, waits) {
     }
     return false;
   };
-  // Two presses, far apart (6 s, then 20 s): a third and a tenth press never helped more than waiting does, and each one is a new
-  // request to ChatGPT. When both fail the hub leaves this conversation alone for a while and sends the prompt afterwards.
-  let ok = await ready(40), retries = 0;
-  const reloaded = false;
-  for (const wait of (waits && waits.length ? waits : [6, 20])) {
+  // Three presses of its Retry (after 6, 12 and 20 s). When all three fail the page itself is loaded again, once, with nothing taken
+  // from the cache (the owner's rule). If that fails too the hub leaves this conversation alone for a while and sends afterwards.
+  let ok = await ready(40), retries = 0, reloaded = false;
+  for (const wait of (waits && waits.length ? waits : [6, 12, 20])) {
     if (ok || !(await failed(false))) break;
     sawError = true;
     await sleep(Math.max(1, wait) * 1000);
@@ -556,6 +555,13 @@ async function settleChat(t, url, front, waits) {
       ok = await ready(24);
     });
     if (!ok) ok = await ready(8);
+  }
+  if (!ok && retries >= 3 && await failed(false)) {
+    await failed(false, "EmaraAI: Retry did not help (3x) — reloading this page");
+    reloaded = true;
+    await chrome.tabs.reload(t.id, {bypassCache: true}).catch(() => {});
+    await sleep(2500);
+    await whileShown(t.id, front, async () => { ok = await ready(40); });
   }
   return {ok, retries, reloaded, error_page: sawError};
 }
