@@ -536,10 +536,13 @@ async function settleChat(t, url, front, waits) {
     }
     return false;
   };
-  // Three presses of its Retry (after 6, 12 and 20 s). When all three fail the page itself is loaded again, once, with nothing taken
+  // Three presses of its Retry (after 5, 8 and 12 s). When all three fail the page itself is loaded again, once, with nothing taken
   // from the cache (the owner's rule). If that fails too the hub leaves this conversation alone for a while and sends afterwards.
+  // THE WHOLE OF THIS MUST STAY UNDER ABOUT 100 SECONDS: the hub waits 180 s for the answer to a send, and when a page that never
+  // loads took longer than that, every prompt ended as "the extension did not answer" instead of as a failed load (seen live: four
+  // hours without one delivered prompt).
   let ok = await ready(40), retries = 0, reloaded = false;
-  for (const wait of (waits && waits.length ? waits : [6, 12, 20])) {
+  for (const wait of (waits && waits.length ? waits : [5, 8, 12])) {
     if (ok || !(await failed(false))) break;
     sawError = true;
     await sleep(Math.max(1, wait) * 1000);
@@ -552,16 +555,15 @@ async function settleChat(t, url, front, waits) {
       await sleep(1500);
       // the window stays in front until the conversation is there (at most 12 s): in a covered window Chrome hardly loads it, and the
       // press alone then only brings the same error page back
-      ok = await ready(24);
+      ok = await ready(16);
     });
-    if (!ok) ok = await ready(8);
   }
   if (!ok && retries >= 3 && await failed(false)) {
     await failed(false, "EmaraAI: Retry did not help (3x) — reloading this page");
     reloaded = true;
     await chrome.tabs.reload(t.id, {bypassCache: true}).catch(() => {});
     await sleep(2500);
-    await whileShown(t.id, front, async () => { ok = await ready(40); });
+    await whileShown(t.id, front, async () => { ok = await ready(34); });
   }
   return {ok, retries, reloaded, error_page: sawError};
 }
@@ -1043,7 +1045,12 @@ function pageHidden() { return {hidden: document.hidden, focused: document.hasFo
 // claude.ai builds its menus only while the page is really drawn. A covered or background window counts as hidden, and then
 // the model, effort and connector menus stay empty. For the few seconds such a menu is needed the tab's window is brought
 // to the front, and the window you were in gets the focus back right after. Nothing is fronted when the page is drawn anyway.
+let showing = 0;        // a tab is being shown for a press right now: the round of the tabs waits
 async function whileShown(tabId, allow, fn) {
+  showing++;
+  try { return await whileShownNow(tabId, allow, fn); } finally { showing--; }
+}
+async function whileShownNow(tabId, allow, fn) {
   const hidden = await run(tabId, pageHidden, [], "MAIN").then(r => !!(r && r.hidden)).catch(() => false);
   if (!hidden || allow === false) return fn();
   if (allow === "quiet") {
@@ -1444,6 +1451,26 @@ const OPS = {
   async chat_tabs() {
     const tabs = await chrome.tabs.query({url: "https://chatgpt.com/*"});
     return {tabs: tabs.map(t => ({tab_id: String(t.id), chat_id: chatIdOf(t.url) || "", window_id: t.windowId, active: !!t.active, discarded: !!t.discarded})).filter(t => t.chat_id)};
+  },
+  // "Keep all tabs active": the next chat tab of each window becomes the shown one. Chrome slows a tab down while another tab of its
+  // window covers it; going round gives every chat its turn in front. Only inside the window - no window is brought forward - and
+  // never in a window where you are looking at a page of your own.
+  async rotate_tab() {
+    if (showing) return {rotated: 0, why: "a tab is being shown for a press"};
+    const tabs = (await chrome.tabs.query({url: "https://chatgpt.com/*"})).filter(t => chatIdOf(t.url) && !t.discarded);
+    const byWin = new Map();
+    for (const t of tabs) { if (!byWin.has(t.windowId)) byWin.set(t.windowId, []); byWin.get(t.windowId).push(t); }
+    let rotated = 0;
+    for (const [win, list] of byWin) {
+      if (list.length < 2) continue;
+      const all = await chrome.tabs.query({windowId: win}), shown = all.find(t => t.active);
+      if (shown && !list.some(t => t.id === shown.id)) continue;         // your own page is in front there: it stays
+      list.sort((a, b) => a.index - b.index);
+      const at = shown ? list.findIndex(t => t.id === shown.id) : -1, next = list[(at + 1) % list.length];
+      await chrome.tabs.update(next.id, {active: true}).catch(() => {});
+      rotated++;
+    }
+    return {rotated, tabs: tabs.length};
   },
   async close_tabs(a) {
     let n = 0;
