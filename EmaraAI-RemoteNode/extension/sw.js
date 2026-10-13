@@ -1524,7 +1524,17 @@ const OPS = {
       if (via) e.message += ` [via project page: ${via}]`;
       e.beforeSend = true; throw e;
     }
-    const r = await run(t.id, pageTypeSend, [a.text, a.plugin || "", a.sel, a.files || []], "MAIN");
+    // The owner's rule: a prompt is typed into the tab that is IN FRONT. The chat's tab becomes the shown one of its window before
+    // anything is typed, and stays it until the prompt is sent (the round of the tabs waits meanwhile). On a remote node, whose
+    // screen nobody works at, the window is brought forward too; on your own PC the window you work in keeps the focus.
+    let r;
+    showing++;
+    try {
+      await chrome.tabs.update(t.id, {active: true}).catch(() => {});
+      if (NODE) await chrome.windows.update(t.windowId, {focused: true}).catch(() => {});
+      await sleep(500);
+      r = await run(t.id, pageTypeSend, [a.text, a.plugin || "", a.sel, a.files || []], "MAIN");
+    } finally { showing--; }
     if (!r || !r.ok) throw new Error((r && r.error) || "could not send");
     // the prompt is in the chat: now the tab goes to the hub's one window (all chat tabs live there, none stays in yours)
     const moved = await intoDeliveryWindow(t, false).catch(() => null);
