@@ -1,0 +1,49 @@
+
+name: Windows 10 Tailscale
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    steps:
+      - name: Check Windows Version
+        shell: powershell
+        run: |
+          Get-ComputerInfo | Select-Object WindowsProductName
+
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+          choco install tailscale -y --no-progress
+          if ($LASTEXITCODE -ne 0) {
+            throw "Tailscale installation failed"
+          }
+
+      - name: Connect Tailscale
+        shell: powershell
+        env:
+          TS_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          & $ts up `
+            --auth-key="$env:TS_AUTHKEY" `
+            --hostname="win-${{ github.run_id }}" `
+            --unattended
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Tailscale connection failed"
+          }
+
+          & $ts ip -4
+
+      - name: Keep Runner Alive
+        shell: powershell
+        run: |
+          while ($true) {
+            Start-Sleep -Seconds 60
+          }
