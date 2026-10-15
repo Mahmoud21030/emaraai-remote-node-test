@@ -33,8 +33,8 @@ jobs:
             -Password $password `
             -Description "Remote Desktop user"
 
-          $group = Get-LocalGroup -SID "S-1-5-32-555"
-          Add-LocalGroupMember -Group $group.Name -Member "rdpuser"
+          $admins = Get-LocalGroup -SID "S-1-5-32-544"
+          Add-LocalGroupMember -Group $admins.Name -Member "rdpuser"
 
       - name: Install Tailscale
         run: |
