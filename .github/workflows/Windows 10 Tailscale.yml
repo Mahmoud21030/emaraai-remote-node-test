@@ -1,49 +1,144 @@
-
-name: Windows 10 Tailscale
+name: Windows RDP over Tailscale
 
 on:
   workflow_dispatch:
 
+permissions: {}
+
 jobs:
-  windows:
+  rdp:
     runs-on: windows-2022
-    timeout-minutes: 360
+    timeout-minutes: 150
+
+    defaults:
+      run:
+        shell: powershell
 
     steps:
-      - name: Check Windows Version
-        shell: powershell
+      - name: Create RDP user
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
-          Get-ComputerInfo | Select-Object WindowsProductName
+          $ErrorActionPreference = "Stop"
+
+          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
+            throw "Missing RDP_PASSWORD secret"
+          }
+
+          $password = ConvertTo-SecureString `
+            $env:RDP_PASSWORD -AsPlainText -Force
+
+          New-LocalUser `
+            -Name "rdpuser" `
+            -Password $password `
+            -Description "Remote Desktop user"
+
+          $group = Get-LocalGroup -SID "S-1-5-32-555"
+          Add-LocalGroupMember -Group $group.Name -Member "rdpuser"
 
       - name: Install Tailscale
-        shell: powershell
         run: |
+          $ErrorActionPreference = "Stop"
+
           choco install tailscale -y --no-progress
           if ($LASTEXITCODE -ne 0) {
             throw "Tailscale installation failed"
           }
 
+          Start-Service -Name Tailscale
+
       - name: Connect Tailscale
-        shell: powershell
         env:
           TS_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
+          $ErrorActionPreference = "Stop"
+
+          if ([string]::IsNullOrWhiteSpace($env:TS_AUTHKEY)) {
+            throw "Missing TAILSCALE_AUTHKEY secret"
+          }
+
           $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
           & $ts up `
             --auth-key="$env:TS_AUTHKEY" `
-            --hostname="win-${{ github.run_id }}" `
-            --unattended
+            --hostname="rdp-${{ github.run_id }}-${{ github.run_attempt }}" `
+            --unattended `
+            --timeout=120s
 
           if ($LASTEXITCODE -ne 0) {
             throw "Tailscale connection failed"
           }
 
-          & $ts ip -4
+          $ip = & $ts ip -4
+          if ($LASTEXITCODE -ne 0 -or !$ip) {
+            throw "Could not obtain Tailscale IPv4"
+          }
 
-      - name: Keep Runner Alive
-        shell: powershell
+          "TS_IP=$($ip.Trim())" >> $env:GITHUB_ENV
+
+      - name: Enable Remote Desktop
         run: |
-          while ($true) {
-            Start-Sleep -Seconds 60
+          $ErrorActionPreference = "Stop"
+
+          Set-ItemProperty `
+            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" -Value 0
+
+          Set-ItemProperty `
+            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" -Value 1
+
+          # Disable default broad RDP rules.
+          Get-NetFirewallRule -Name "RemoteDesktop*" `
+            -ErrorAction SilentlyContinue |
+            Disable-NetFirewallRule
+
+          # Allow RDP through the Tailscale address only.
+          New-NetFirewallRule `
+            -DisplayName "RDP over Tailscale" `
+            -Direction Inbound `
+            -Action Allow `
+            -Protocol TCP `
+            -LocalPort 3389 `
+            -LocalAddress $env:TS_IP `
+            -RemoteAddress "100.64.0.0/10" `
+            -Profile Any
+
+          Start-Service -Name TermService
+
+          $ready = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            if (Get-NetTCPConnection -State Listen -LocalPort 3389 `
+                -ErrorAction SilentlyContinue) {
+              $ready = $true
+              break
+            }
+            Start-Sleep -Seconds 2
+          }
+
+          if (!$ready) {
+            throw "RDP did not start listening on port 3389"
+          }
+
+          @"
+          ## RDP connection
+          - Computer: $env:TS_IP
+          - Username: $env:COMPUTERNAME\rdpuser
+          - Password: the value stored in RDP_PASSWORD
+          - Session duration: 2 hours
+          "@ >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Keep session available for 2 hours
+        run: |
+          $end = (Get-Date).AddHours(2)
+          while ((Get-Date) -lt $end) {
+            Start-Sleep -Seconds 30
+          }
+
+      - name: Disconnect Tailscale
+        if: always()
+        run: |
+          $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          if (Test-Path $ts) {
+            & $ts logout
           }
